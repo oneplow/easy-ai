@@ -108,8 +108,14 @@ def get_all_users() -> list[dict]:
     with _lock:
         c = _open()
         try:
-            # Exclude password_hash and session_token for security
-            rows = c.execute("SELECT username, email, created_at FROM users ORDER BY created_at DESC").fetchall()
+            # Join with api_keys to get detailed usage
+            rows = c.execute("""
+                SELECT u.username, u.email, u.created_at,
+                       k.key, k.rpm_limit, k.expires_at, k.allowed_models
+                FROM users u
+                LEFT JOIN api_keys k ON u.username = k.owner_username
+                ORDER BY u.created_at DESC
+            """).fetchall()
             return [dict(r) for r in rows]
         finally:
             c.close()

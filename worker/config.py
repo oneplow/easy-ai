@@ -18,17 +18,9 @@ TARGET_URL = "https://use.ai"
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "").strip()
 AUTH_DB_PATH = "bank/auth.db"
 
-
 # ---- Browser behavior -------------------------------------------------------
 HEADLESS = True              # spike.py flips this to False so you can watch
 HUMANIZE = True              # cloakbrowser human-like mouse/keyboard/scroll
-# GUEST_MODE: two ways to get a free message, both VERIFIED working:
-#   False (recommended) = SIGN UP a throwaway account (instant, passwordless, no
-#     verification). 1 free message PER ACCOUNT, unlimited accounts per IP, and
-#     you bank a real harvestable token. This is the volume vector.
-#   True = skip signup, use the anonymous guest's 1 free message (per guest
-#     identity). Simpler but no token, and fewer messages per identity.
-# NOTE: the cap is per-account/per-guest, NOT per-IP -> PROXIES ARE OPTIONAL.
 GUEST_MODE = False
 NAV_TIMEOUT_MS = 30_000
 ACTION_TIMEOUT_MS = 15_000

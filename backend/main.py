@@ -122,6 +122,16 @@ async def reset_user_key(request: Request):
     auth_db.reset_limit(key["key"])
     return {"message": "Rate limit reset successfully"}
 
+@app.delete("/user/keys")
+async def delete_user_key(request: Request):
+    username = _get_user_from_req(request)
+    key = auth_db.get_user_key(username)
+    if not key:
+        raise HTTPException(status_code=404, detail="No key found")
+    if auth_db.delete_key(key["key"]):
+        return {"message": "Key revoked successfully"}
+    raise HTTPException(status_code=500, detail="Failed to revoke key")
+
 
 @app.on_event("startup")
 async def _start_prewarmer():
@@ -205,9 +215,20 @@ async def admin_delete_user(username: str, req: Request):
 
 
 # --- status ------------------------------------------------------------------
-@app.get("/models")
-async def models():
-    return {"models": config.MODELS, "default": config.DEFAULT_MODEL}
+@app.get("/v1/models")
+async def get_v1_models():
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": m["slug"],
+                "object": "model",
+                "created": 1686935002,
+                "owned_by": "easy-ai",
+                "label": m.get("label", m["slug"])
+            } for m in config.MODELS
+        ]
+    }
 
 
 @app.get("/bank")
