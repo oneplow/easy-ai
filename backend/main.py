@@ -216,6 +216,26 @@ async def admin_delete_key(key: str, req: Request):
         return {"message": "Key deleted"}
     raise HTTPException(status_code=404, detail="Key not found")
 
+class AdminUpdateKeyRequest(BaseModel):
+    name: str | None = None
+    rpm_limit: int | None = None
+    expires_in_days: int | None = None
+    allowed_models: str | None = None
+
+@app.put("/admin/keys/{key}")
+async def admin_update_key_route(key: str, req: AdminUpdateKeyRequest, request: Request):
+    _require_admin_key(request)
+    success = auth_db.admin_update_key(
+        key=key,
+        name=req.name,
+        rpm_limit=req.rpm_limit,
+        expires_in_days=req.expires_in_days,
+        allowed_models=req.allowed_models
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"message": "Key updated successfully"}
+
 
 @app.post("/admin/keys/{key}/reset")
 async def admin_reset_key_limit(key: str, req: Request):
@@ -229,6 +249,24 @@ async def admin_reset_key_limit(key: str, req: Request):
 async def admin_get_users(req: Request):
     _require_admin_key(req)
     return {"users": auth_db.get_all_users()}
+
+class AdminUpdateUserRequest(BaseModel):
+    rpm_limit: int | None = None
+    expires_in_days: int | None = None
+    allowed_models: str | None = None
+
+@app.put("/admin/users/{username}")
+async def admin_update_user(username: str, req: AdminUpdateUserRequest, request: Request):
+    _require_admin_key(request)
+    success = auth_db.admin_update_user_key(
+        username=username,
+        rpm_limit=req.rpm_limit,
+        expires_in_days=req.expires_in_days,
+        allowed_models=req.allowed_models
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="User or key not found")
+    return {"message": "User updated successfully"}
 
 @app.delete("/admin/users/{username}")
 async def admin_delete_user(username: str, req: Request):

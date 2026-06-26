@@ -26,9 +26,6 @@ try:
 except ImportError:
     websockets = None
 
-_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
-
 
 def enabled() -> bool:
     return bool(getattr(config, "DIRECT_WS_ENABLED", False)) and websockets is not None
@@ -101,11 +98,43 @@ async def _stream_gen(acct: dict, model: str, parts: list):
     uri = (f"{config.WS_AGENT_BASE}/{chat_id}"
            f"?userId={acct['user_id']}&userType=regular"
            f"&userEmail={acct['email']}&planType=free&isTestUser=false")
-    hdrs = {"Cookie": acct["cookie_header"], "Origin": "https://use.ai", "User-Agent": _UA}
+    hdrs = {
+        "Cookie": acct["cookie_header"],
+        "Origin": "https://use.ai",
+        "Referer": "https://use.ai/",
+        "User-Agent": acct.get("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"),
+    }
+    # Merge extra browser headers from fingerprint if available
+    fp_headers = acct.get("headers", {})
+    for k in ("Accept-Language", "Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform"):
+        if k in fp_headers:
+            hdrs[k] = fp_headers[k]
     idle = getattr(config, "WS_IDLE_TIMEOUT", 90)
-    async with websockets.connect(uri, additional_headers=hdrs, max_size=None,
-                                  open_timeout=config.WS_OPEN_TIMEOUT,
-                                  ping_interval=20, ping_timeout=60) as ws:
+    # Set up SOCKS5 proxy if provided
+    sock = None
+    if acct.get("proxy"):
+        try:
+            from python_socks.async_.asyncio import Proxy
+            import ssl
+            proxy_client = Proxy.from_url(acct["proxy"])
+            sock = await proxy_client.connect(dest_host="agents.use.ai", dest_port=443)
+        except ImportError:
+            log.warning("python-socks not installed, ignoring WS proxy")
+
+    # Connect to WebSocket (pass sock if we have a proxy circuit)
+    kwargs = {
+        "additional_headers": hdrs,
+        "max_size": None,
+        "open_timeout": config.WS_OPEN_TIMEOUT,
+        "ping_interval": 20,
+        "ping_timeout": 60
+    }
+    if sock:
+        kwargs["sock"] = sock
+        kwargs["server_hostname"] = "agents.use.ai"
+        kwargs["ssl"] = ssl.create_default_context()
+
+    async with websockets.connect(uri, **kwargs) as ws:
         await ws.send(json.dumps(_build_frame(
             chat_id, acct["user_id"], acct["email"], model, parts)))
         while True:

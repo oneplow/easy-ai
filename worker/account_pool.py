@@ -8,9 +8,11 @@ pool is drained (graceful degradation under burst load).
 """
 import asyncio
 import logging
+import random
 import time
 
 from . import config
+from . import proxies
 from .session_http import create_account
 
 log = logging.getLogger("account_pool")
@@ -35,8 +37,10 @@ class AccountPool:
             log.info("account pool started (target=%d)", self.size)
 
     async def _make_one(self) -> None:
-        a = await create_account()
+        p = proxies.to_url(proxies.next_proxy())
+        a = await create_account(proxy=p)
         a["_born"] = time.time()
+        a["proxy"] = p
         await self._queue().put(a)
 
     async def _loop(self) -> None:
@@ -48,7 +52,7 @@ class AccountPool:
                                          return_exceptions=True)
             except Exception as e:
                 log.warning("pool loop error: %s", e)
-            await asyncio.sleep(self.refill_sec)
+            await asyncio.sleep(self.refill_sec + random.uniform(0.5, 2.0))
 
     async def acquire(self) -> dict:
         """A warm account if one is ready (and not stale); otherwise sign up inline."""
@@ -61,7 +65,10 @@ class AccountPool:
             if time.time() - a.get("_born", 0) < self.ttl:
                 return a               # fresh enough -> use it
             # stale -> drop and try the next one
-        return await create_account()  # drained -> ~1s inline signup
+        p = proxies.to_url(proxies.next_proxy())
+        a = await create_account(proxy=p)  # drained -> ~1s inline signup
+        a["proxy"] = p
+        return a
 
     def ready(self) -> int:
         return self._q.qsize() if self._q else 0

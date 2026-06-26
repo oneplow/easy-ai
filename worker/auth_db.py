@@ -113,8 +113,16 @@ def login_or_register_google_user(email: str, name: str) -> tuple[bool, str, str
                     # Update their email field just in case
                     c.execute("UPDATE users SET email=? WHERE username=?", (email, username))
                 else:
-                    # Register new user
-                    username = email
+                    # Register new user: base username is email before @
+                    base_username = email.split('@')[0]
+                    username = base_username
+                    counter = 1
+                    while True:
+                        if not c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+                            break
+                        username = f"{base_username}{counter}"
+                        counter += 1
+                        
                     now = time.time()
                     c.execute("INSERT INTO users(username, email, password_hash, session_token, created_at) VALUES(?,?,?,?,?)", 
                               (username, email, "", "", now))
@@ -209,6 +217,28 @@ def create_or_update_user_key(username: str, rpm_limit: int, expires_in_days: in
         finally:
             c.close()
 
+def admin_update_user_key(username: str, rpm_limit: int | None = None, expires_in_days: int | None = None, allowed_models: str | None = None) -> bool:
+    with _lock:
+        c = _open()
+        try:
+            existing = c.execute("SELECT key, rpm_limit, expires_at, allowed_models FROM api_keys WHERE owner_username=?", (username,)).fetchone()
+            if not existing:
+                return False
+                
+            new_rpm = rpm_limit if rpm_limit is not None else existing["rpm_limit"]
+            new_expires = (time.time() + (expires_in_days * 86400)) if expires_in_days is not None else existing["expires_at"]
+            new_models = allowed_models if allowed_models is not None else existing["allowed_models"]
+            
+            c.execute("""
+                UPDATE api_keys 
+                SET rpm_limit=?, expires_at=?, allowed_models=?
+                WHERE key=?
+            """, (new_rpm, new_expires, new_models, existing["key"]))
+            c.commit()
+            return True
+        finally:
+            c.close()
+
 def get_user_key(username: str) -> dict | None:
     with _lock:
         c = _open()
@@ -228,6 +258,29 @@ def create_key(key: str, name: str | None = None, expires_at: float | None = Non
             )
             c.commit()
             return get_key(key)
+        finally:
+            c.close()
+
+def admin_update_key(key: str, name: str | None = None, rpm_limit: int | None = None, expires_in_days: int | None = None, allowed_models: str | None = None) -> bool:
+    with _lock:
+        c = _open()
+        try:
+            existing = c.execute("SELECT name, rpm_limit, expires_at, allowed_models FROM api_keys WHERE key=?", (key,)).fetchone()
+            if not existing:
+                return False
+                
+            new_name = name if name is not None else existing["name"]
+            new_rpm = rpm_limit if rpm_limit is not None else existing["rpm_limit"]
+            new_expires = (time.time() + (expires_in_days * 86400)) if expires_in_days is not None else existing["expires_at"]
+            new_models = allowed_models if allowed_models is not None else existing["allowed_models"]
+            
+            c.execute("""
+                UPDATE api_keys 
+                SET name=?, rpm_limit=?, expires_at=?, allowed_models=?
+                WHERE key=?
+            """, (new_name, new_rpm, new_expires, new_models, key))
+            c.commit()
+            return True
         finally:
             c.close()
 

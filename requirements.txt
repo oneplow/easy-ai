@@ -5,3 +5,4 @@ websockets>=13.0
 bcrypt
 google-auth>=2.29
 requests>=2.31
+python-socks[asyncio]>=2.4.4

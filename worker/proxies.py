@@ -46,6 +46,10 @@ def _parse(line: str):
             username, password = creds.split(":", 1)
         else:
             username = creds
+    elif rest.count(":") == 3:
+        # Webshare format: ip:port:user:pass
+        ip, port, username, password = rest.split(":")
+        host = f"{ip}:{port}"
     else:
         host = rest
 
@@ -61,8 +65,14 @@ def _load():
     global _pool, _rr, _loaded
     pool = [p for p in (_parse(l) for l in config.PROXIES) if p]
     if config.PROXY_FILE and os.path.exists(config.PROXY_FILE):
-        with open(config.PROXY_FILE, encoding="utf-8") as f:
-            pool += [p for p in (_parse(l) for l in f) if p]
+        if os.path.isdir(config.PROXY_FILE):
+            for fname in os.listdir(config.PROXY_FILE):
+                if fname.endswith(".txt"):
+                    with open(os.path.join(config.PROXY_FILE, fname), encoding="utf-8") as f:
+                        pool += [p for p in (_parse(l) for l in f) if p]
+        else:
+            with open(config.PROXY_FILE, encoding="utf-8") as f:
+                pool += [p for p in (_parse(l) for l in f) if p]
     _pool = pool
     _rr = itertools.cycle(pool) if pool else None
     _loaded = True

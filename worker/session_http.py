@@ -3,34 +3,41 @@ Headless account factory. use.ai signup is two unauthenticated POSTs and needs
 NO password, NO email verification (fake emails are accepted; emailVerified stays
 null). One free message per account, unlimited accounts per IP -> no proxies.
 
-create_account() -> {email, user_id, cookie_header, token}
+create_account() -> {email, user_id, cookie_header, token, ua}
+
+Anti-detection: every signup uses a unique fingerprint (randomised UA, headers,
+and realistic email). The fingerprint is attached to the returned account dict
+so downstream WS connections can reuse the same identity.
 """
+import asyncio
+import random
 import uuid
 import logging
 
 import httpx
 
 from . import config
-from .email_gen import gen_email
+from .fingerprint import fingerprint as make_fingerprint
 
 log = logging.getLogger("session_http")
 
-_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
-_HEADERS = {
-    "Content-Type": "application/json",
-    "Origin": "https://use.ai",
-    "Referer": "https://use.ai/",
-    "User-Agent": _UA,
-}
-
 
 async def create_account(proxy: str | None = None) -> dict:
-    """Sign up a throwaway account. Returns email, user id, cookie header, token."""
-    email = gen_email()
-    async with httpx.AsyncClient(timeout=30, headers=_HEADERS, proxy=proxy) as c:
+    """Sign up a throwaway account. Returns email, user id, cookie header, token, ua."""
+    fp = make_fingerprint()
+    email = fp["email"]
+    hdrs = {**fp["headers"], "Content-Type": "application/json"}
+
+    # Small random delay (50-500ms) to look human
+    await asyncio.sleep(random.uniform(0.05, 0.5))
+
+    async with httpx.AsyncClient(timeout=30, headers=hdrs, proxy=proxy) as c:
         r1 = await c.post(f"{config.AUTH_BASE}/email-login", json={"email": email})
         r1.raise_for_status()
+
+        # Small delay between requests like a real browser
+        await asyncio.sleep(random.uniform(0.1, 0.4))
+
         r2 = await c.post(f"{config.AUTH_BASE}/sign-in/credentials", json={
             "email": email,
             "mixpanelUserId": str(uuid.uuid4()),
@@ -39,6 +46,8 @@ async def create_account(proxy: str | None = None) -> dict:
         })
         r2.raise_for_status()
         token = r2.headers.get("set-auth-token", "")
+
+        await asyncio.sleep(random.uniform(0.05, 0.2))
 
         s = await c.get(f"{config.AUTH_BASE}/get-session")
         if s.status_code != 200 or s.text in ("", "null"):
@@ -49,4 +58,5 @@ async def create_account(proxy: str | None = None) -> dict:
 
     log.info("created account %s (userId=%s)", email, user_id[:8])
     return {"email": email, "user_id": user_id,
-            "cookie_header": cookie_header, "token": token}
+            "cookie_header": cookie_header, "token": token,
+            "ua": fp["ua"], "headers": fp["headers"]}

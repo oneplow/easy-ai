@@ -206,16 +206,16 @@ MAX_BANKED_ATTEMPTS = 2               # how many fresh accounts to try before co
 # Line formats: "1.2.3.4:8000", "http://1.2.3.4:8000",
 #               "socks5://user:pass@1.2.3.4:1080", "user:pass@host:port"
 PROXIES = []                    # inline list of proxies
-PROXY_FILE = ""                 # optional: path to a file, one proxy per line (# ok)
+PROXY_FILE = r"C:\Users\F\Desktop\ai\easy-ai\proxies"
 PROXY_ROTATION = "round_robin"  # "round_robin" or "random"
-PROXY_DEFAULT_SCHEME = "http"   # used when a proxy line omits the scheme
+PROXY_DEFAULT_SCHEME = "socks5"   # used when a proxy line omits the scheme
 
 # ---- FREE proxy options (no paid account) -----------------------------------
 # Option A: Tor -- free rotation via the Tor network. Start the daemon with
 # start_tor.bat (uses the tor.exe bundled in Tor Browser, no browser needed),
 # then this rotates the exit IP before each signup. NEWNYM is rate-limited to
 # ~10s, so keep BANK_PREWARM_BATCH small (2-3).  >>> pre-wired for your machine.
-PROXY_TOR = True                 # you have Tor -> on
+PROXY_TOR = False                # you have Tor -> on
 TOR_BROWSER_DIR = r"C:\Users\Emir\Desktop\Tor Browser"   # your Tor Browser folder
 TOR_SOCKS = "socks5://127.0.0.1:9050"
 TOR_CONTROL_PORT = 9051
