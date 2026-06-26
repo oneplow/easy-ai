@@ -264,6 +264,27 @@ async def health_status():
     return health.H.snapshot(bank.count_fresh())
 
 
+@app.get("/health/stream")
+async def health_stream(req: Request):
+    """Real-time SSE stream for dashboard stats."""
+    async def gen():
+        while True:
+            if await req.is_disconnected():
+                break
+            if getattr(config, "DIRECT_WS_ENABLED", False):
+                from worker.account_pool import POOL
+                snap = health.H.snapshot(POOL.ready())
+                snap["warm_accounts"] = POOL.ready()
+                snap["pool_target"] = POOL.size
+            else:
+                snap = health.H.snapshot(bank.count_fresh())
+            
+            yield f"data: {json.dumps(snap)}\n\n"
+            await asyncio.sleep(2)
+            
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 # --- stateful chat -----------------------------------------------------------
 def _sse_payload(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
