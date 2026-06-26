@@ -110,31 +110,34 @@ async def _stream_gen(acct: dict, model: str, parts: list):
         if k in fp_headers:
             hdrs[k] = fp_headers[k]
     idle = getattr(config, "WS_IDLE_TIMEOUT", 90)
-    # Set up SOCKS5 proxy if provided
-    sock = None
-    if acct.get("proxy"):
-        try:
-            from python_socks.async_.asyncio import Proxy
-            import ssl
-            proxy_client = Proxy.from_url(acct["proxy"])
-            sock = await proxy_client.connect(dest_host="agents.use.ai", dest_port=443)
-        except ImportError:
-            log.warning("python-socks not installed, ignoring WS proxy")
 
-    # Connect to WebSocket (pass sock if we have a proxy circuit)
-    kwargs = {
-        "additional_headers": hdrs,
-        "max_size": None,
-        "open_timeout": config.WS_OPEN_TIMEOUT,
-        "ping_interval": 20,
-        "ping_timeout": 60
-    }
-    if sock:
-        kwargs["sock"] = sock
-        kwargs["server_hostname"] = "agents.use.ai"
-        kwargs["ssl"] = ssl.create_default_context()
+    # Build connection kwargs — try proxy first, fall back to direct
+    async def _connect_ws():
+        """Try proxy-based WS, fall back to direct if proxy fails."""
+        if acct.get("proxy"):
+            try:
+                from python_socks.async_.asyncio import Proxy
+                import ssl as _ssl
+                proxy_client = Proxy.from_url(acct["proxy"])
+                sock = await proxy_client.connect(dest_host="agents.use.ai", dest_port=443)
+                return websockets.connect(uri,
+                    additional_headers=hdrs, max_size=None,
+                    open_timeout=config.WS_OPEN_TIMEOUT,
+                    ping_interval=20, ping_timeout=60,
+                    sock=sock, server_hostname="agents.use.ai",
+                    ssl=_ssl.create_default_context())
+            except ImportError:
+                log.warning("python-socks not installed, connecting without proxy")
+            except Exception as e:
+                log.warning("proxy WS connect failed (%r), falling back to direct", e)
 
-    async with websockets.connect(uri, **kwargs) as ws:
+        # Direct (no proxy) fallback
+        return websockets.connect(uri,
+            additional_headers=hdrs, max_size=None,
+            open_timeout=config.WS_OPEN_TIMEOUT,
+            ping_interval=20, ping_timeout=60)
+
+    async with await _connect_ws() as ws:
         await ws.send(json.dumps(_build_frame(
             chat_id, acct["user_id"], acct["email"], model, parts)))
         while True:
@@ -144,6 +147,13 @@ async def _stream_gen(acct: dict, model: str, parts: list):
                 break                                  # no token for `idle`s -> stop
             except websockets.ConnectionClosed:
                 break
+            # Skip binary frames (proxy garbage)
+            if isinstance(raw, bytes):
+                try:
+                    raw = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    log.debug("skipping non-UTF8 binary frame (%d bytes)", len(raw))
+                    continue
             try:
                 o = json.loads(raw)
             except Exception:
