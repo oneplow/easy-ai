@@ -155,7 +155,7 @@ DIRECT_WS_RETRIES = 2                                  # fresh-account retries o
 # the real runner failure behind ERR_PROXY_CONNECTION_FAILED.
 BROWSER_FALLBACK_ENABLED = False
 # Warm account pool (sub-second latency: signup leaves the hot path)
-ACCOUNT_POOL_SIZE = 8                                   # ready accounts kept warm
+ACCOUNT_POOL_SIZE = 20                                  # ready accounts kept warm
 ACCOUNT_POOL_REFILL_SEC = 3                             # how often to top the pool up
 ACCOUNT_TTL_SEC = 600                                   # drop pooled accounts older than this
 # No Chromium in the WS path -> serve many at once (browser path stays capped low)

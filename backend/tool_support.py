@@ -33,6 +33,17 @@ CRITICAL RULES:
 - Output NOTHING except the JSON object when calling a tool.
 - If you do NOT need a tool, reply normally in natural language.
 - NEVER wrap the JSON in ```json``` or any markdown code block.
+- You can call MULTIPLE tools at once by adding more items to the "tool_calls" array.
+
+THOROUGHNESS RULES:
+- When asked to analyze, debug, or work with a codebase, you MUST read ALL \
+relevant files before giving your answer — not just 1 or 2.
+- If a project has config files, entry points, utilities, and sub-modules, \
+read them ALL.  Do NOT guess or summarize from partial information.
+- Prefer calling multiple read operations in a SINGLE tool_calls response \
+to minimize round-trips.
+- If you are unsure whether a file is relevant, READ IT.  It is always \
+better to read too much than too little.
 
 Available tools:
 {tool_list}"""
