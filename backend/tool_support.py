@@ -330,7 +330,7 @@ class ToolCallStreamInterceptor:
 
     @staticmethod
     def _pretty_summary(tool_calls: list) -> str:
-        """Build a human-readable summary."""
+        """Build a human-readable summary with clickable links."""
         read_files = []
         other_calls = []
 
@@ -345,22 +345,32 @@ class ToolCallStreamInterceptor:
 
             if "read" in name.lower() or "file" in name.lower():
                 fp = args.get("filePath", args.get("path", "?"))
+                # fp should be an absolute path, we'll format it as a file:// link
+                # use forward slashes for the uri
+                uri = fp.replace("\\", "/")
+                if not uri.startswith("/"):
+                    uri = "/" + uri
                 basename = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                
                 start = args.get("startLine", "")
                 end = args.get("endLine", "")
                 if start and end:
-                    read_files.append(f"`{basename}` #L{start}-{end}")
+                    read_files.append(f"- [{basename} #L{start}-{end}](file://{uri}#L{start}-L{end})")
                 else:
-                    read_files.append(f"`{basename}`")
+                    read_files.append(f"- [{basename}](file://{uri})")
             else:
-                other_calls.append(f"`{name}`")
+                other_calls.append(f"- `{name}`")
 
         lines = []
         if read_files:
-            lines.append(f"Reading {len(read_files)} file{'s' if len(read_files) > 1 else ''}: {', '.join(read_files)}")
+            lines.append(f"**Reading {len(read_files)} file{'s' if len(read_files) > 1 else ''}:**\n" + "\n".join(read_files))
         if other_calls:
-            lines.append(f"Calling: {', '.join(other_calls)}")
-        return "\n".join(lines) if lines else "Executing tool calls..."
+            if lines:
+                lines.append("\n")
+            lines.append(f"**Calling:**\n" + "\n".join(other_calls))
+        
+        # Add an extra newline at the end to separate from AI response
+        return "\n".join(lines) + "\n\n" if lines else "Executing tool calls...\n\n"
 
     def finish(self) -> list[dict]:
         if not self.buffer:
