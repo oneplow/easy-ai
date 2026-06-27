@@ -31,8 +31,8 @@ RESPONSE_TIMEOUT_MS = 90_000  # how long to wait for the AI reply
 MAX_CONCURRENT_BROWSERS = 4
 
 # ---- Email / password generation (must satisfy the site's email regex) ------
-EMAIL_LOCAL_MIN = 8
-EMAIL_LOCAL_MAX = 14
+EMAIL_LOCAL_MIN = 20
+EMAIL_LOCAL_MAX = 20
 EMAIL_DOMAIN_MIN = 5
 EMAIL_DOMAIN_MAX = 9
 EMAIL_TLDS = ["com", "net", "org", "io", "co", "xyz"]

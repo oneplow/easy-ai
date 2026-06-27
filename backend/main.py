@@ -433,10 +433,12 @@ async def openai_completions(req: Request):
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
 
             if tools:
-                # Buffer everything, then decide at the end
+                # Buffer only if it's a tool call, otherwise stream in real-time
                 interceptor = ToolCallStreamInterceptor()
                 async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
                     interceptor.feed(delta)
+                    for chunk in interceptor.get_passthrough():
+                        yield f"data: {json.dumps({**base, **chunk})}\n\n"
                 for chunk in interceptor.finish():
                     yield f"data: {json.dumps({**base, **chunk})}\n\n"
             else:

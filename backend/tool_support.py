@@ -45,6 +45,12 @@ to minimize round-trips.
 - If you are unsure whether a file is relevant, READ IT.  It is always \
 better to read too much than too little.
 
+ANTI-HALLUCINATION RULES:
+- You do NOT have any subagents or assistants.
+- You MUST perform all file reading yourself by explicitly calling the tools.
+- Do NOT claim to have explored the codebase if you did not explicitly call the read tools.
+- Do NOT hallucinate file contents or summarize without reading.
+
 Available tools:
 {tool_list}"""
 
@@ -189,53 +195,87 @@ def _format_tool_calls(raw_calls: list) -> list[dict]:
 
 class ToolCallStreamInterceptor:
     """
-    When tools are present, we buffer the ENTIRE AI response and only emit
-    chunks once the stream is finished.  This eliminates all timing/partial-JSON
-    issues at the cost of slightly delayed first-token for tool-call turns
-    (normal text turns are unaffected because the caller skips the interceptor
-    when no tools are in the request).
+    When tools are present, Cursor/Cline ALWAYS sends `tools` in every request.
+    If we blindly buffer everything, normal text responses will freeze the IDE
+    until the 500-line script is fully generated.
 
-    Usage in the streaming generator:
-        interceptor = ToolCallStreamInterceptor()
-        async for delta in stream:
-            interceptor.feed(delta)        # always returns nothing
-        for chunk in interceptor.finish():  # yields all chunks at the end
-            yield chunk
+    This interceptor buffers only the beginning. If the response looks like a
+    tool JSON (starts with '{' or '```json'), it buffers the whole thing and
+    emits a tool_call chunk at the end.
+    If it's normal text, it switches to passthrough mode and yields text
+    immediately for a real-time typing effect.
     """
 
     def __init__(self):
         self.buffer = ""
+        self.mode = "inspecting"  # 'inspecting', 'buffering', 'passthrough'
+        self.passthrough_queue = []
 
     def feed(self, delta: str) -> None:
-        """Accumulate tokens. Never emits anything mid-stream."""
+        if self.mode == "passthrough":
+            self.passthrough_queue.append(delta)
+            return
+
         self.buffer += delta
+        
+        # We need a few characters to decide
+        if len(self.buffer.strip()) >= 5:
+            if self.buffer.strip().startswith("{") or self.buffer.strip().startswith("```"):
+                self.mode = "buffering"
+            else:
+                self.mode = "passthrough"
+                self.passthrough_queue.append(self.buffer)
+                self.buffer = ""
+
+    def get_passthrough(self) -> list[dict]:
+        """Call this in the loop to yield any text that is safe to stream."""
+        chunks = []
+        for text in self.passthrough_queue:
+            if text:
+                chunks.append({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": text},
+                        "finish_reason": None,
+                    }]
+                })
+        self.passthrough_queue.clear()
+        return chunks
 
     def finish(self) -> list[dict]:
         """
         Called when the upstream stream is done.
-        Returns a list of OpenAI-format chunk dicts to yield to the client.
         """
-        text = self.buffer
-        if not text:
-            return []
-
-        tool_calls = _extract_tool_calls(text)
-
-        if tool_calls:
-            # It was a tool call — emit a single chunk with tool_calls
-            return [{
+        chunks = self.get_passthrough()
+        
+        if self.mode == "buffering" and self.buffer:
+            tool_calls = _extract_tool_calls(self.buffer)
+            if tool_calls:
+                chunks.append({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"tool_calls": tool_calls},
+                        "finish_reason": "tool_calls",
+                    }]
+                })
+            else:
+                # False alarm, was just a JSON-like text block, flush as text
+                chunks.append({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": self.buffer},
+                        "finish_reason": None,
+                    }]
+                })
+        elif self.mode == "inspecting" and self.buffer:
+            # Stream ended before we got 5 chars, just flush as text
+            chunks.append({
                 "choices": [{
                     "index": 0,
-                    "delta": {"tool_calls": tool_calls},
-                    "finish_reason": "tool_calls",
-                }]
-            }]
-        else:
-            # Normal text — replay the whole buffer as a single content chunk
-            return [{
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": text},
+                    "delta": {"content": self.buffer},
                     "finish_reason": None,
                 }]
-            }]
+            })
+            
+        return chunks
+
