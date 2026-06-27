@@ -191,10 +191,9 @@ def _extract_tool_calls(text: str, valid_tools: set | None = None) -> list[dict]
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Step 3: Extract {"tool_calls": [...]} even if severely truncated
+    # Step 3: Extract {"tool_calls": [...]} using a brace-matching parser
     all_calls = []
     
-    # Find all occurrences of {"tool_calls"
     start_idx = 0
     while True:
         idx = text.find('"tool_calls"', start_idx)
@@ -207,7 +206,25 @@ def _extract_tool_calls(text: str, valid_tools: set | None = None) -> list[dict]
             start_idx = idx + 12
             continue
             
-        raw_match = text[brace_idx:].strip()
+        # Extract the JSON object by counting braces
+        brace_count = 0
+        end_idx = -1
+        for i in range(brace_idx, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i
+                    break
+        
+        if end_idx != -1:
+            # We found a complete JSON object
+            raw_match = text[brace_idx:end_idx+1]
+        else:
+            # It was truncated, take everything to the end
+            raw_match = text[brace_idx:]
+            
         parsed = False
         
         # Try appending common missing closing braces to fix truncated JSON
@@ -228,15 +245,34 @@ def _extract_tool_calls(text: str, valid_tools: set | None = None) -> list[dict]
                     pass
         
         if not parsed:
-            # Last ditch: try to extract individual tool call objects using a looser regex
-            inner_matches = re.findall(r'\{\s*"id"\s*:\s*"[^"]+",\s*"type"\s*:\s*"function",\s*"function"\s*:\s*\{.*?\}\s*\}', raw_match, re.DOTALL)
-            for inner in inner_matches:
-                try:
-                    all_calls.append(json.loads(inner))
-                except:
-                    pass
+            # Last ditch: extract individual tool calls with a brace matcher
+            call_start = 0
+            while True:
+                cid = raw_match.find('"id"', call_start)
+                if cid == -1:
+                    break
+                cb = raw_match.rfind('{', call_start, cid)
+                if cb == -1:
+                    call_start = cid + 4
+                    continue
+                
+                c_count = 0
+                c_end = -1
+                for j in range(cb, len(raw_match)):
+                    if raw_match[j] == '{': c_count += 1
+                    elif raw_match[j] == '}':
+                        c_count -= 1
+                        if c_count == 0:
+                            c_end = j
+                            break
+                if c_end != -1:
+                    try:
+                        all_calls.append(json.loads(raw_match[cb:c_end+1]))
+                    except:
+                        pass
+                call_start = cid + 4
                     
-        start_idx = idx + 12
+        start_idx = end_idx + 1 if end_idx != -1 else len(text)
 
     if all_calls:
         return _format_tool_calls(all_calls, valid_tools)
