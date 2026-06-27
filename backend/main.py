@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from worker import auth_db, bank, config, health
 from worker.harvester import top_up
 from worker.easy_ai import run_messages, stream_messages
+from backend.tool_support import inject_tools_and_results, ToolCallStreamInterceptor
 from . import context
 from .pool import run_guarded, run_guarded_gen
 
@@ -419,6 +420,10 @@ async def openai_completions(req: Request):
     _require_api_key(req, model)
     stream = bool(body.get("stream", False))
     msgs = body.get("messages", [])
+    tools = body.get("tools", [])
+
+    if tools:
+        msgs = inject_tools_and_results(msgs, tools)
 
     if stream:
         cid = "chatcmpl-" + uuid.uuid4().hex[:24]
@@ -426,10 +431,21 @@ async def openai_completions(req: Request):
 
         async def gen():
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
-            async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
-                chunk = {**base, "choices": [{"index": 0, "delta": {"content": delta},
-                                              "finish_reason": None}]}
-                yield f"data: {json.dumps(chunk)}\n\n"
+
+            if tools:
+                # Buffer everything, then decide at the end
+                interceptor = ToolCallStreamInterceptor()
+                async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
+                    interceptor.feed(delta)
+                for chunk in interceptor.finish():
+                    yield f"data: {json.dumps({**base, **chunk})}\n\n"
+            else:
+                # Normal streaming — no buffering needed
+                async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
+                    chunk = {**base, "choices": [{"index": 0, "delta": {"content": delta},
+                                                  "finish_reason": None}]}
+                    yield f"data: {json.dumps(chunk)}\n\n"
+
             done = {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
@@ -437,4 +453,16 @@ async def openai_completions(req: Request):
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     reply = await run_guarded(lambda: run_messages(model, msgs))
+
+    if tools:
+        from backend.tool_support import _extract_tool_calls
+        tool_calls = _extract_tool_calls(reply)
+        if tool_calls:
+            block = _openai_block("", model)
+            block["choices"][0]["message"]["tool_calls"] = tool_calls
+            block["choices"][0]["message"].pop("content", None)
+            block["choices"][0]["finish_reason"] = "tool_calls"
+            return JSONResponse(block)
+
     return JSONResponse(_openai_block(reply, model))
+
