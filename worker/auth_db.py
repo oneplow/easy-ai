@@ -73,10 +73,8 @@ def _open() -> sqlite3.Connection:
             count INTEGER,
             PRIMARY KEY (key, minute_timestamp)
         )""")
-    c.execute("""
-        
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS request_logs (
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS request_logs (
                 id TEXT PRIMARY KEY,
                 username TEXT,
                 model TEXT,
@@ -90,8 +88,8 @@ def _open() -> sqlite3.Connection:
             )
         ''')
 
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS usage_logs(
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS usage_logs(
             date TEXT,
             username TEXT,
             model TEXT,
@@ -100,7 +98,7 @@ def _open() -> sqlite3.Connection:
             success INTEGER DEFAULT 0,
             total_latency_ms INTEGER DEFAULT 0,
             PRIMARY KEY (date, username, model)
-        )""")
+        )''')
     return c
 
 import bcrypt
