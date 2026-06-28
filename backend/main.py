@@ -50,7 +50,7 @@ def _require_admin_key(req: Request) -> None:
     if token != config.ADMIN_KEY and key != config.ADMIN_KEY:
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
-def _require_api_key(req: Request, model: str) -> None:
+def _require_api_key(req: Request, model: str) -> str:
     auth = req.headers.get("authorization", "")
     token = auth.removeprefix("Bearer ").strip() if auth.lower().startswith("bearer ") else ""
     key = req.headers.get("x-api-key", "").strip()
@@ -62,6 +62,7 @@ def _require_api_key(req: Request, model: str) -> None:
     is_valid, reason = auth_db.validate_and_track_usage(client_key, model)
     if not is_valid:
         raise HTTPException(status_code=401, detail=reason)
+    return client_key
 
 def _get_user_from_req(req: Request) -> str:
     auth = req.headers.get("authorization", "")
@@ -72,6 +73,47 @@ def _get_user_from_req(req: Request) -> str:
     if not username:
         raise HTTPException(status_code=401, detail="Invalid session token")
     return username
+
+
+def _get_dashboard_payload(req: Request) -> dict:
+    if getattr(config, "DIRECT_WS_ENABLED", False):
+        from worker.account_pool import POOL
+        snap = health.H.snapshot(POOL.ready())
+        snap["warm_accounts"] = POOL.ready()
+        snap["pool_target"] = POOL.size
+    else:
+        snap = health.H.snapshot(bank.count_fresh())
+
+    auth = req.headers.get("authorization", "")
+    bearer = auth.removeprefix("Bearer ").strip() if auth.lower().startswith("bearer ") else ""
+    key = req.headers.get("x-api-key", "").strip()
+
+    dashboard: dict | None = None
+    if config.ADMIN_KEY and (bearer == config.ADMIN_KEY or key == config.ADMIN_KEY):
+        dashboard = {
+            "mode": "admin",
+            "key_count": len(auth_db.list_keys()),
+            "user_count": len(auth_db.get_all_users()),
+            "token_info": None,
+        }
+    elif bearer:
+        username = auth_db.get_user_from_token(bearer)
+        if username:
+            dashboard = {
+                "mode": "user",
+                "key_count": 1 if auth_db.get_user_key(username) else 0,
+                "user_count": None,
+                "token_info": auth_db.get_token_usage_by_username(username)
+                or {
+                    "token_limit": None,
+                    "tokens_used": 0,
+                    "token_reset_period": "weekly",
+                    "token_last_reset": None,
+                },
+            }
+
+    snap["dashboard"] = dashboard
+    return snap
 
 from pydantic import BaseModel
 class RegisterRequest(BaseModel):
@@ -255,6 +297,8 @@ class AdminUpdateUserRequest(BaseModel):
     rpm_limit: int | None = None
     expires_in_days: int | None = None
     allowed_models: str | None = None
+    token_limit: int | None = -1  # -1 means "don't change", None means unlimited
+    token_reset_period: str | None = None
 
 @app.put("/admin/users/{username}")
 async def admin_update_user(username: str, req: AdminUpdateUserRequest, request: Request):
@@ -265,6 +309,12 @@ async def admin_update_user(username: str, req: AdminUpdateUserRequest, request:
         expires_in_days=req.expires_in_days,
         allowed_models=req.allowed_models
     )
+    # Handle token_limit separately (-1 = don't change)
+    if req.token_limit != -1:
+        auth_db.admin_set_token_limit_by_username(username, req.token_limit, req.token_reset_period)
+    elif req.token_reset_period:
+        # Only update reset period
+        auth_db.admin_set_token_limit_by_username(username, None, req.token_reset_period)
     if not success:
         raise HTTPException(status_code=404, detail="User or key not found")
     return {"message": "User updated successfully"}
@@ -275,6 +325,56 @@ async def admin_delete_user(username: str, req: Request):
     if auth_db.delete_user(username):
         return {"message": "User and associated data deleted"}
     raise HTTPException(status_code=404, detail="User not found")
+
+
+# --- Token management endpoints -----------------------------------------------
+
+@app.get("/user/tokens")
+async def get_user_tokens(request: Request):
+    username = _get_user_from_req(request)
+    usage = auth_db.get_token_usage_by_username(username)
+    if not usage:
+        return {"token_limit": None, "tokens_used": 0, "token_reset_period": "weekly", "token_last_reset": None}
+    return usage
+
+@app.get("/admin/users/{username}/tokens")
+async def admin_get_user_tokens(username: str, req: Request):
+    _require_admin_key(req)
+    usage = auth_db.get_token_usage_by_username(username)
+    if not usage:
+        return {"token_limit": None, "tokens_used": 0, "token_reset_period": "weekly", "token_last_reset": None}
+    return usage
+
+class TokenLimitRequest(BaseModel):
+    token_limit: int | None = None
+    reset_period: str | None = None
+
+@app.put("/admin/users/{username}/tokens")
+async def admin_set_user_tokens(username: str, req: TokenLimitRequest, request: Request):
+    _require_admin_key(request)
+    success = auth_db.admin_set_token_limit_by_username(username, req.token_limit, req.reset_period)
+    if not success:
+        raise HTTPException(status_code=404, detail="User or key not found")
+    return {"message": "Token limit updated"}
+
+@app.post("/admin/users/{username}/tokens/reset")
+async def admin_reset_user_tokens(username: str, req: Request):
+    _require_admin_key(req)
+    success = auth_db.admin_reset_tokens_by_username(username)
+    if not success:
+        raise HTTPException(status_code=404, detail="User or key not found")
+    return {"message": "Token usage reset"}
+
+class AddTokensRequest(BaseModel):
+    amount: int
+
+@app.post("/admin/users/{username}/tokens/add")
+async def admin_add_user_tokens(username: str, req: AddTokensRequest, request: Request):
+    _require_admin_key(request)
+    success = auth_db.admin_add_tokens_by_username(username, req.amount)
+    if not success:
+        raise HTTPException(status_code=404, detail="User or key not found")
+    return {"message": f"Added {req.amount} tokens"}
 
 
 # --- status ------------------------------------------------------------------
@@ -334,14 +434,7 @@ async def health_stream(req: Request):
         while True:
             if await req.is_disconnected():
                 break
-            if getattr(config, "DIRECT_WS_ENABLED", False):
-                from worker.account_pool import POOL
-                snap = health.H.snapshot(POOL.ready())
-                snap["warm_accounts"] = POOL.ready()
-                snap["pool_target"] = POOL.size
-            else:
-                snap = health.H.snapshot(bank.count_fresh())
-            
+            snap = _get_dashboard_payload(req)
             yield f"data: {json.dumps(snap)}\n\n"
             await asyncio.sleep(2)
             
@@ -358,10 +451,50 @@ def _sse(token: str) -> str:
 
 
 @app.post("/chat")
+
+@app.get("/user/usage_stats")
+async def get_user_usage_stats(request: Request):
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    username = auth_db.get_user_from_token(token)
+    if not username:
+        return JSONResponse({"detail": "Invalid session"}, status_code=401)
+    
+    days = int(request.query_params.get("days", 90))
+    stats = auth_db.get_usage_stats(username, days)
+    return {"stats": stats}
+
+@app.get("/admin/usage_stats")
+async def admin_get_usage_stats_route(req: Request):
+    _require_admin_key(req)
+    days = int(req.query_params.get("days", 90))
+    stats = auth_db.admin_get_usage_stats(days)
+    return {"stats": stats}
+
+
+@app.get("/user/logs")
+async def get_user_logs(request: Request):
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    username = auth_db.get_user_from_token(token)
+    if not username:
+        return JSONResponse({"detail": "Invalid session"}, status_code=401)
+    
+    limit = int(request.query_params.get("limit", 50))
+    offset = int(request.query_params.get("offset", 0))
+    return auth_db.get_request_logs(username, limit, offset)
+
+@app.get("/admin/logs")
+async def admin_get_logs(req: Request):
+    _require_admin_key(req)
+    limit = int(req.query_params.get("limit", 50))
+    offset = int(req.query_params.get("offset", 0))
+    return auth_db.admin_get_request_logs(limit, offset)
+
 async def chat(req: Request):
+    start_time = time.time()
+
     body = await req.json()
     model = body.get("model", "default")
-    _require_api_key(req, model)
+    client_key = _require_api_key(req, model)
     message = body.get("message", "")
     session_id = body.get("sessionId") or str(uuid.uuid4())
 
@@ -380,6 +513,13 @@ async def chat(req: Request):
                 yield _sse(f"Backend error contacting the model runner ({type(exc).__name__}).")
         reply = "".join(parts).strip()
         context.append(session_id, "assistant", reply)
+        # Count tokens: input + output
+        input_tokens = auth_db.estimate_tokens(message)
+        output_tokens = auth_db.estimate_tokens(reply)
+        auth_db.consume_tokens(client_key, input_tokens + output_tokens)
+        latency = int((time.time() - start_time) * 1000)
+        auth_db.log_usage(client_key, model, input_tokens + output_tokens, True, latency)
+        auth_db.insert_request_log(client_key, str(uuid.uuid4()), model, 'POST', '/chat', True, input_tokens, output_tokens, latency)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -388,10 +528,20 @@ async def chat(req: Request):
 # --- stateless: simple -------------------------------------------------------
 @app.post("/v1/chat")
 async def v1_chat(req: Request):
+    start_time = time.time()
     body = await req.json()
     model = body.get("model", "default")
-    _require_api_key(req, model)
-    reply = await run_guarded(lambda: run_messages(model, body.get("messages", [])))
+    client_key = _require_api_key(req, model)
+    msgs = body.get("messages", [])
+    reply = await run_guarded(lambda: run_messages(model, msgs))
+    # Count tokens
+    input_text = " ".join(m.get("content", "") for m in msgs if m.get("content"))
+    input_tokens = auth_db.estimate_tokens(input_text)
+    output_tokens = auth_db.estimate_tokens(reply)
+    auth_db.consume_tokens(client_key, input_tokens + output_tokens)
+    latency = int((time.time() - start_time) * 1000)
+    auth_db.log_usage(client_key, model, input_tokens + output_tokens, True, latency)
+    auth_db.insert_request_log(client_key, str(uuid.uuid4()), model, 'POST', '/chat', True, input_tokens, output_tokens, latency)
     return JSONResponse({
         "model": model,
         "choices": [{"message": {"role": "assistant", "content": reply}}],
@@ -415,9 +565,10 @@ def _openai_block(reply: str, model: str) -> dict:
 
 @app.post("/v1/chat/completions")
 async def openai_completions(req: Request):
+    start_time = time.time()
     body = await req.json()
     model = body.get("model", "default")
-    _require_api_key(req, model)
+    client_key = _require_api_key(req, model)
     stream = bool(body.get("stream", False))
     msgs = body.get("messages", [])
     tools = body.get("tools", [])
@@ -425,18 +576,24 @@ async def openai_completions(req: Request):
     if tools:
         msgs = inject_tools_and_results(msgs, tools)
 
+    # Estimate input tokens
+    input_text = " ".join(m.get("content", "") for m in msgs if m.get("content"))
+    input_tokens = auth_db.estimate_tokens(input_text)
+
     if stream:
         cid = "chatcmpl-" + uuid.uuid4().hex[:24]
         created = int(time.time())
 
         async def gen():
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
+            output_parts: list[str] = []
 
             if tools:
                 # Buffer only if it's a tool call, otherwise stream in real-time
                 valid_tool_names = {t["function"]["name"] for t in tools if t.get("type") == "function"}
                 interceptor = ToolCallStreamInterceptor(valid_tools=valid_tool_names)
                 async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
+                    output_parts.append(delta)
                     interceptor.feed(delta)
                     for chunk in interceptor.get_passthrough():
                         yield f"data: {json.dumps({**base, **chunk})}\n\n"
@@ -445,6 +602,7 @@ async def openai_completions(req: Request):
             else:
                 # Normal streaming — no buffering needed
                 async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
+                    output_parts.append(delta)
                     chunk = {**base, "choices": [{"index": 0, "delta": {"content": delta},
                                                   "finish_reason": None}]}
                     yield f"data: {json.dumps(chunk)}\n\n"
@@ -453,9 +611,24 @@ async def openai_completions(req: Request):
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
 
+            # Count tokens after stream completes
+            output_text = "".join(output_parts)
+            output_tokens = auth_db.estimate_tokens(output_text)
+            auth_db.consume_tokens(client_key, input_tokens + output_tokens)
+            latency = int((time.time() - start_time) * 1000)
+        auth_db.log_usage(client_key, model, input_tokens + output_tokens, True, latency)
+        auth_db.insert_request_log(client_key, str(uuid.uuid4()), model, 'POST', '/chat', True, input_tokens, output_tokens, latency)
+
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     reply = await run_guarded(lambda: run_messages(model, msgs))
+
+    # Count tokens for non-streaming
+    output_tokens = auth_db.estimate_tokens(reply)
+    auth_db.consume_tokens(client_key, input_tokens + output_tokens)
+    latency = int((time.time() - start_time) * 1000)
+    auth_db.log_usage(client_key, model, input_tokens + output_tokens, True, latency)
+    auth_db.insert_request_log(client_key, str(uuid.uuid4()), model, 'POST', '/chat', True, input_tokens, output_tokens, latency)
 
     if tools:
         from backend.tool_support import _extract_tool_calls
