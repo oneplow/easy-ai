@@ -149,8 +149,11 @@ async def google_auth(req: GoogleAuthRequest):
             raise HTTPException(status_code=500, detail=token)
             
         return {"token": token, "username": username}
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Google token: {str(e)}")
+    except Exception as e:
+        log.error(f"Google auth error: {e}")
+        raise HTTPException(status_code=500, detail=f"Google auth error: {str(e)}")
 
 class LoginRequest(BaseModel):
     username: str
