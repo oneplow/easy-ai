@@ -15,6 +15,7 @@ from collections import defaultdict, deque
 import json
 import logging
 import time
+from urllib import error as urllib_error, parse as urllib_parse, request as urllib_request
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -169,7 +170,54 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 class GoogleAuthRequest(BaseModel):
-    credential: str
+    credential: str | None = None
+    access_token: str | None = None
+
+
+def _fetch_google_json(url: str, headers: dict[str, str] | None = None) -> dict:
+    req = urllib_request.Request(url, headers=headers or {})
+    with urllib_request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _resolve_google_identity(req: GoogleAuthRequest) -> tuple[str, str]:
+    if req.credential:
+        idinfo = id_token.verify_oauth2_token(
+            req.credential,
+            google_requests.Request(),
+            config.GOOGLE_CLIENT_ID,
+        )
+        issuer = idinfo.get("iss")
+        if issuer not in ("accounts.google.com", "https://accounts.google.com"):
+            raise HTTPException(status_code=401, detail="Invalid Google token issuer")
+
+        email = idinfo.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="Google account has no email")
+
+        return email, idinfo.get("name", "")
+
+    if req.access_token:
+        token_info_url = (
+            "https://www.googleapis.com/oauth2/v3/tokeninfo?"
+            + urllib_parse.urlencode({"access_token": req.access_token})
+        )
+        token_info = _fetch_google_json(token_info_url)
+        audience = token_info.get("aud") or token_info.get("azp")
+        if audience != config.GOOGLE_CLIENT_ID:
+            raise HTTPException(status_code=401, detail="Google token audience mismatch")
+
+        profile = _fetch_google_json(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {req.access_token}"},
+        )
+        email = profile.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="Google account has no email")
+
+        return email, profile.get("name", "")
+
+    raise HTTPException(status_code=400, detail="Missing Google credential")
 
 @app.post("/auth/google")
 async def google_auth(req: GoogleAuthRequest, request: Request):
@@ -179,19 +227,7 @@ async def google_auth(req: GoogleAuthRequest, request: Request):
         raise HTTPException(status_code=500, detail="Google login is not configured")
 
     try:
-        idinfo = id_token.verify_oauth2_token(
-            req.credential,
-            google_requests.Request(),
-            config.GOOGLE_CLIENT_ID,
-        )
-        issuer = idinfo.get("iss")
-        if issuer not in ("accounts.google.com", "https://accounts.google.com"):
-            raise HTTPException(status_code=401, detail="Invalid Google token issuer")
-        email = idinfo.get("email")
-        name = idinfo.get("name", "")
-        
-        if not email:
-            raise HTTPException(status_code=400, detail="Google account has no email")
+        email, name = _resolve_google_identity(req)
             
         success, token, username = auth_db.login_or_register_google_user(email, name)
         if not success:
@@ -200,6 +236,10 @@ async def google_auth(req: GoogleAuthRequest, request: Request):
         return {"token": token, "username": username}
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"Invalid Google token: {str(e)}")
+    except urllib_error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        log.error("Google token lookup failed: %s", detail or e.reason)
+        raise HTTPException(status_code=401, detail="Invalid Google access token")
     except Exception as e:
         log.error(f"Google auth error: {e}")
         raise HTTPException(status_code=500, detail=f"Google auth error: {str(e)}")
