@@ -613,6 +613,17 @@ def get_token_usage_by_username(username: str) -> dict | None:
             c.close()
 
 
+def get_total_system_tokens() -> int:
+    """Get the sum of all tokens used across all api keys."""
+    with _lock:
+        c = _open()
+        try:
+            row = c.execute("SELECT SUM(tokens_used) as total FROM api_keys").fetchone()
+            return row["total"] or 0
+        finally:
+            c.close()
+
+
 def admin_set_token_limit(key: str, token_limit: int | None, reset_period: str | None = None) -> bool:
     """Set or remove the token limit for a key. None = unlimited."""
     with _lock:
@@ -865,5 +876,156 @@ def admin_get_request_logs(limit: int = 50, offset: int = 0):
                 ],
                 "total": total
             }
+        finally:
+            c.close()
+
+
+def get_model_status_blocks(time_window_minutes: int = 60) -> dict[str, list[int]]:
+    """
+    Aggregate request_logs into per-minute status blocks for each model.
+
+    Returns a dict: { model_id: [block0, block1, ..., block59] }
+    Each block is:
+      1 = Healthy  (success rate >= 90% or no traffic)
+      3 = Degraded  (50–89%)
+      2 = Warning   (20–49%)
+      0 = Down      (< 20%)
+    block0 is the oldest minute, block[-1] is the most recent.
+    """
+    now = time.time()
+    window_start = now - (time_window_minutes * 60)
+
+    with _lock:
+        c = _open()
+        try:
+            rows = c.execute(
+                """
+                SELECT model,
+                       CAST((created_at - ?) / 60 AS INTEGER) AS minute_bucket,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN is_success = 1 THEN 1 ELSE 0 END) AS successes
+                FROM request_logs
+                WHERE created_at >= ?
+                GROUP BY model, minute_bucket
+                """,
+                (window_start, window_start),
+            ).fetchall()
+
+            # Build a nested dict: { model: { minute_bucket: (total, successes) } }
+            model_minutes: dict[str, dict[int, tuple[int, int]]] = {}
+            for r in rows:
+                model_id = r[0]
+                bucket = r[1]
+                total = r[2]
+                successes = r[3]
+                if model_id not in model_minutes:
+                    model_minutes[model_id] = {}
+                model_minutes[model_id][bucket] = (total, successes)
+
+            # Convert to status blocks (0..time_window_minutes-1)
+            result: dict[str, list[int]] = {}
+            for model_id, minutes in model_minutes.items():
+                blocks: list[int] = []
+                for i in range(time_window_minutes):
+                    if i in minutes:
+                        total, successes = minutes[i]
+                        rate = successes / total if total > 0 else 1.0
+                        if rate >= 0.9:
+                            blocks.append(1)   # Healthy
+                        elif rate >= 0.5:
+                            blocks.append(3)   # Degraded (light green)
+                        elif rate >= 0.2:
+                            blocks.append(2)   # Warning (orange)
+                        else:
+                            blocks.append(0)   # Down (red)
+                    else:
+                        blocks.append(1)  # No traffic = assume healthy
+                result[model_id] = blocks
+
+            return result
+        finally:
+            c.close()
+
+
+def get_user_notifications(username: str) -> list[dict]:
+    """
+    Generate dynamic notifications for the user.
+    """
+    notifications = []
+    now = time.time()
+    
+    with _lock:
+        c = _open()
+        try:
+            # Find the user's primary key
+            row = c.execute("SELECT * FROM api_keys WHERE owner_username=?", (username,)).fetchone()
+            if not row:
+                return []
+            
+            key = row["key"]
+            
+            # Check Token Limits
+            token_limit = row["token_limit"]
+            tokens_used = row["tokens_used"] or 0
+            
+            if token_limit and token_limit > 0:
+                if tokens_used >= token_limit:
+                    notifications.append({
+                        "id": "token-exceeded",
+                        "title": "Token Quota Exceeded",
+                        "message": f"You have reached your limit of {token_limit:,} tokens.",
+                        "type": "error",
+                        "date": int(now * 1000)
+                    })
+                elif tokens_used >= token_limit * 0.8:
+                    notifications.append({
+                        "id": "token-low",
+                        "title": "Low Token Balance",
+                        "message": f"You have used {tokens_used:,} of {token_limit:,} tokens ({(tokens_used/token_limit)*100:.1f}%).",
+                        "type": "warning",
+                        "date": int(now * 1000)
+                    })
+            
+            # Check Key Expiration
+            expires_at = row["expires_at"]
+            if expires_at:
+                days_left = (expires_at - now) / 86400
+                if days_left < 0:
+                    notifications.append({
+                        "id": "key-expired",
+                        "title": "API Key Expired",
+                        "message": "Your API key has expired and can no longer be used.",
+                        "type": "error",
+                        "date": int(now * 1000)
+                    })
+                elif days_left <= 3:
+                    notifications.append({
+                        "id": "key-expiring",
+                        "title": "API Key Expiring Soon",
+                        "message": f"Your API key will expire in {int(days_left)} days.",
+                        "type": "warning",
+                        "date": int(now * 1000)
+                    })
+            
+            # Check RPM Limits (Current Minute)
+            rpm_limit = row["rpm_limit"]
+            if rpm_limit is not None:
+                current_minute = math.floor(now / 60)
+                limit_row = c.execute(
+                    "SELECT count FROM rate_limits WHERE key=? AND minute_timestamp=?", 
+                    (key, current_minute)
+                ).fetchone()
+                
+                count = limit_row["count"] if limit_row else 0
+                if count >= rpm_limit:
+                    notifications.append({
+                        "id": "rpm-limit",
+                        "title": "Rate Limit Reached",
+                        "message": f"You have hit your {rpm_limit} RPM limit. Requests are being throttled.",
+                        "type": "error",
+                        "date": int(now * 1000)
+                    })
+                    
+            return notifications
         finally:
             c.close()

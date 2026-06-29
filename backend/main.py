@@ -155,6 +155,7 @@ def _get_dashboard_payload(req: Request) -> dict:
             "mode": "admin",
             "key_count": len(auth_db.list_keys()),
             "user_count": len(auth_db.get_all_users()),
+            "total_system_tokens": auth_db.get_total_system_tokens(),
             "token_info": None,
         }
     elif bearer:
@@ -525,6 +526,7 @@ async def admin_set_user_role(username: str, req: RoleRequest, request: Request)
 # --- status ------------------------------------------------------------------
 @app.get("/v1/models")
 async def get_v1_models():
+    status_blocks = auth_db.get_model_status_blocks(60)
     return {
         "object": "list",
         "data": [
@@ -533,10 +535,21 @@ async def get_v1_models():
                 "object": "model",
                 "created": 1686935002,
                 "owned_by": "easy-ai",
-                "label": m.get("label", m["slug"])
+                "label": m.get("label", m["slug"]),
+                "blocks": status_blocks.get(m["slug"], [1] * 60)
             } for m in config.MODELS
         ]
     }
+
+
+@app.get("/v1/notifications")
+async def get_notifications(req: Request):
+    try:
+        username = _get_user_from_req(req)
+        notifications = auth_db.get_user_notifications(username)
+        return {"notifications": notifications}
+    except HTTPException:
+        return {"notifications": []}
 
 
 @app.get("/bank")
