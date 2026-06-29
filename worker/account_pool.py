@@ -20,8 +20,8 @@ log = logging.getLogger("account_pool")
 
 class AccountPool:
     def __init__(self):
-        self.size = getattr(config, "ACCOUNT_POOL_SIZE", 8)
-        self.ttl = getattr(config, "ACCOUNT_TTL_SEC", 600)
+        self.size = getattr(config, "ACCOUNT_POOL_SIZE", 15)
+        self.ttl = getattr(config, "ACCOUNT_TTL_SEC", 1800)
         self.refill_sec = getattr(config, "ACCOUNT_POOL_REFILL_SEC", 3)
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
