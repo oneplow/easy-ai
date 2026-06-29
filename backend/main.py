@@ -693,7 +693,18 @@ async def v1_chat(req: Request):
     msgs = body.get("messages", [])
     reply = await run_guarded(lambda: run_messages(model, msgs))
     # Count tokens
-    input_text = " ".join(m.get("content", "") for m in msgs if m.get("content"))
+    text_parts = []
+    for m in msgs:
+        content = m.get("content")
+        if not content:
+            continue
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text" and "text" in part:
+                    text_parts.append(part["text"])
+    input_text = " ".join(text_parts)
     input_tokens = auth_db.estimate_tokens(input_text)
     output_tokens = auth_db.estimate_tokens(reply)
     auth_db.consume_tokens(client_key, input_tokens + output_tokens)
