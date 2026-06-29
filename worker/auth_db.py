@@ -228,8 +228,9 @@ def delete_user(username: str) -> bool:
         finally:
             c.close()
 
-def create_or_update_user_key(username: str, rpm_limit: int, expires_in_days: int | None, allowed_models: str | None) -> dict:
-    """Creates or updates the single key for a user."""
+def create_or_update_user_key(username: str, rpm_limit: int, expires_in_days: int | None, allowed_models: str | None, default_token_limit: int | None = 1_000_000) -> dict:
+    """Creates or updates the single key for a user.
+    default_token_limit: default token quota for new keys (default 1M tokens)."""
     with _lock:
         c = _open()
         try:
@@ -252,9 +253,9 @@ def create_or_update_user_key(username: str, rpm_limit: int, expires_in_days: in
             else:
                 key = "sk-" + secrets.token_hex(32)
                 c.execute("""
-                    INSERT INTO api_keys(key, name, expires_at, rpm_limit, created_at, owner_username, allowed_models)
-                    VALUES(?, ?, ?, ?, ?, ?, ?)
-                """, (key, f"{username}'s Key", expires_at, rpm_limit, now, username, allowed_models))
+                    INSERT INTO api_keys(key, name, expires_at, rpm_limit, created_at, owner_username, allowed_models, token_limit, token_last_reset)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (key, f"{username}'s Key", expires_at, rpm_limit, now, username, allowed_models, default_token_limit, now))
             
             c.commit()
             return {"key": key, "rpm_limit": rpm_limit, "expires_at": expires_at, "allowed_models": allowed_models}
