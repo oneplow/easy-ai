@@ -1,7 +1,24 @@
 """
 Realistic browser fingerprint rotation. Each call to fingerprint() returns
-a coherent (UA, headers, email-style) set so every signup looks like a
-different person on a different machine.
+a coherent (UA, headers, email) set so every signup looks like a different
+person on a different machine.
+
+WHICH PATH USES THIS:
+  This is the identity source for the **headless WebSocket path** (the default,
+  DIRECT_WS_ENABLED=True). worker/session_http.py calls fingerprint() to mint
+  a coherent (UA + headers + realistic email) identity for each HTTP signup,
+  and reuses the same UA/headers on the downstream WebSocket so the two legs
+  of the same session look like one browser. Its realistic email generator
+  (_gen_realistic_email) is intentionally separate from
+  worker/email_gen.gen_email: the HTTP path benefits from human-looking
+  addresses (real domains, name patterns) because it cannot hide behind a
+  real browser's anti-detection, whereas the browser path only needs a
+  format-valid value to type into a field. Keep the two generators in sync
+  only if you change the signup requirements.
+
+  Note: when the browser fallback path (WARM/COLD in easy_ai.py) is enabled,
+  it does NOT call this module — it uses cloakbrowser/playwright's own
+  stealth + email_gen for the form fields. This module is HTTP-only.
 """
 import random
 import string

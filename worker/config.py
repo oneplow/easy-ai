@@ -246,3 +246,21 @@ TOR_NEWNYM_DELAY = 10            # seconds between circuit renewals (Tor's rate 
 # Option B: free public proxy lists -- run `python -m worker.proxy_sources` to
 # fetch + validate them into PROXY_FILE, then set PROXY_FILE above. Free proxies
 # die fast, so re-run it periodically.
+
+# ---- Knowledge Items (KI) — persistent cross-session memory -----------------
+# Inspired by Antigravity's Knowledge Items system. When enabled, after every
+# KI_DISTILL_EVERY_N_TURNS turns in a session, the model distills reusable
+# insights into the KI store. At session start, relevant KI summaries are
+# injected into the system prompt for persistent context.
+KI_DISTILLATION_ENABLED = os.environ.get("KI_DISTILLATION_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+KI_DISTILL_EVERY_N_TURNS = max(2, int(os.environ.get("KI_DISTILL_EVERY_N_TURNS", "6")))
+KI_MAX_ITEMS = max(10, int(os.environ.get("KI_MAX_ITEMS", "100")))  # cap total KIs
+KI_INJECT_ON_FIRST_TURN = True  # inject KI summaries at the start of each session
+
+# ---- Conversation context store (backend/context.py) ------------------------
+# History is persisted to SQLite (bank/context.db) with an in-process LRU
+# cache on top. These knobs bound its memory footprint and lifetime.
+CONTEXT_TTL_SEC = max(60, int(os.environ.get("CONTEXT_TTL_SEC", "86400")))   # 24h
+CONTEXT_MAX_PER_SESSION = max(2, int(os.environ.get("CONTEXT_MAX_PER_SESSION", "50")))
+CONTEXT_MAX_SESSIONS = max(10, int(os.environ.get("CONTEXT_MAX_SESSIONS", "1000")))
+MAX_HISTORY_CHARS = max(500, int(os.environ.get("MAX_HISTORY_CHARS", "6000")))

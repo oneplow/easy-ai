@@ -87,6 +87,14 @@ def _load():
     _loaded = True
 
 
+def reload():
+    global _loaded
+    with _lock:
+        _loaded = False
+        _pool.clear()
+    log.info("proxy list marked for reload")
+
+
 def has_proxies() -> bool:
     if config.PROXY_TOR:
         return True

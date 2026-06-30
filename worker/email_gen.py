@@ -1,4 +1,22 @@
-"""Throwaway email + password generation. Format-valid gibberish, never reused."""
+"""Throwaway email + password generation for the account farm.
+
+WHICH PATH USES THIS:
+  This module is the email source for the **browser signup path** (the WARM
+  and COLD fallbacks in easy_ai.py: `_signup()` calls gen_email()/gen_password()
+  to fill the email/password fields on use.ai's signup form). It is also the
+  source for the legacy `harvester` browser prewarmer.
+
+  It is NOT used by the headless WebSocket path (`worker/session_http.py` +
+  `worker/fingerprint.py`), which signs up over HTTP with its own realistic
+  email generator and a full browser fingerprint. The two generators exist
+  because the browser path only needs a format-valid value to type into a
+  field, while the HTTP path needs a coherent identity (UA + headers + email)
+  to evade detection. See worker/fingerprint.py for the headless counterpart.
+
+Format: gibberish local-part + a uuid fragment for near-zero collision across
+the farm, plus a random domain/TLD that satisfies a standard email regex.
+gen_email() / gen_password() are never reused.
+"""
 import random
 import string
 import uuid

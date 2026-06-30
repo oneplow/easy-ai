@@ -27,27 +27,37 @@ except ImportError:
 
 # public, no-auth free proxy lists
 SOURCES = [
-    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=ipport&format=text",
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    ("socks5", "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"),
+    ("http", "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=ipport&format=text"),
+    ("http", "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"),
+    ("http", "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt"),
+    ("http", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"),
 ]
 
 TEST_URL = "http://httpbin.org/ip"   # cheap "what's my IP" echo to confirm a proxy works
 
 
-async def _fetch_list(client, url):
+async def _fetch_list(client, source):
+    scheme, url = source
     try:
         r = await client.get(url, timeout=20)
         r.raise_for_status()
-        return [l.strip() for l in r.text.splitlines() if l.strip() and ":" in l]
+        lines = []
+        for l in r.text.splitlines():
+            l = l.strip()
+            if not l or ":" not in l:
+                continue
+            if "://" not in l:
+                l = f"{scheme}://{l}"
+            lines.append(l)
+        return lines
     except Exception as e:
         log.warning("source failed %s: %s", url, e)
         return []
 
 
 async def _check(sem, line):
-    url = line if "://" in line else "http://" + line
+    url = line
     async with sem:
         try:
             async with httpx.AsyncClient(proxy=url, timeout=8) as c:
