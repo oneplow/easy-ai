@@ -26,10 +26,10 @@ from worker.auth import estimate_tokens, estimate_image_tokens
 from worker.easy_ai import run_messages, stream_messages
 
 from backend.tool_support import inject_tools_and_results, ToolCallStreamInterceptor, _extract_tool_calls
-from .. import context
-from ..deps import require_api_key
-from ..pool import run_guarded, run_guarded_gen
-from ..schemas import (
+from backend import context
+from backend.deps import require_api_key
+from backend.pool import run_guarded, run_guarded_gen
+from backend.schemas import (
     ChatRequest,
     OpenAIChatCompletionsRequest,
     V1ChatRequest,
@@ -219,6 +219,7 @@ async def openai_completions(req: Request, body: OpenAIChatCompletionsRequest):
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
             output_parts: list[str] = []
 
+            final_finish_reason = "stop"
             if tools:
                 # Buffer only if it's a tool call, otherwise stream in real-time
                 valid_tool_names = {t["function"]["name"] for t in tools if t.get("type") == "function"}
@@ -230,6 +231,8 @@ async def openai_completions(req: Request, body: OpenAIChatCompletionsRequest):
                         yield f"data: {json.dumps({**base, **chunk})}\n\n"
                 for chunk in interceptor.finish():
                     yield f"data: {json.dumps({**base, **chunk})}\n\n"
+                    if chunk.get("choices") and chunk["choices"][0].get("finish_reason"):
+                        final_finish_reason = None
             else:
                 # Normal streaming — no buffering needed
                 async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
@@ -238,8 +241,9 @@ async def openai_completions(req: Request, body: OpenAIChatCompletionsRequest):
                                                  "finish_reason": None}]}
                     yield f"data: {json.dumps(chunk)}\n\n"
 
-            done = {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            yield f"data: {json.dumps(done)}\n\n"
+            if final_finish_reason:
+                done = {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": final_finish_reason}]}
+                yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
 
             # Count tokens after stream completes
