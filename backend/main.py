@@ -278,8 +278,23 @@ async def login(req: LoginRequest, request: Request):
     _enforce_auth_rate_limit(request, "login")
     success, token_or_err, role = auth_db.login_user(req.username, req.password)
     if not success:
-        raise HTTPException(status_code=401, detail=token_or_err)
+        raise HTTPException(status_code=400, detail=token_or_err)
     return {"token": token_or_err, "username": req.username, "role": role}
+
+class AdminLoginRequest(BaseModel):
+    admin_key: str
+
+@app.post("/auth/admin/login")
+async def admin_login(req: AdminLoginRequest, request: Request):
+    _enforce_auth_rate_limit(request, "admin_login")
+    if not config.ADMIN_KEY or req.admin_key != config.ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+    
+    success, token, username, role = auth_db.login_admin_fallback()
+    if not success:
+        raise HTTPException(status_code=500, detail="Admin fallback login failed")
+    
+    return {"token": token, "username": username, "role": role}
 
 @app.get("/auth/me")
 async def get_auth_me(request: Request):
