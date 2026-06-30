@@ -224,9 +224,18 @@ async def openai_completions(req: Request, body: OpenAIChatCompletionsRequest):
                 # Buffer only if it's a tool call, otherwise stream in real-time
                 valid_tool_names = {t["function"]["name"] for t in tools if t.get("type") == "function"}
                 interceptor = ToolCallStreamInterceptor(valid_tools=valid_tool_names)
+                import time
+                last_ping = time.time()
                 async for delta in run_guarded_gen(lambda: stream_messages(model, msgs)):
                     output_parts.append(delta)
                     interceptor.feed(delta)
+                    
+                    # Yield empty delta every 10 seconds to keep load balancers from timing out
+                    now = time.time()
+                    if now - last_ping > 10:
+                        yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}]})}\n\n"
+                        last_ping = now
+                        
                     for chunk in interceptor.get_passthrough():
                         yield f"data: {json.dumps({**base, **chunk})}\n\n"
                 for chunk in interceptor.finish():

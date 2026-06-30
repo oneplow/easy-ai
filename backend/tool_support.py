@@ -472,6 +472,13 @@ class ToolCallStreamInterceptor:
                 "choices": [{
                     "index": 0,
                     "delta": {"tool_calls": tool_calls},
+                    "finish_reason": None,
+                }]
+            })
+            chunks.append({
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
                     "finish_reason": "tool_calls",
                 }]
             })
