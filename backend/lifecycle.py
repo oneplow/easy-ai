@@ -4,8 +4,14 @@ App startup / shutdown lifecycle.
 Pulled out of main.py so the entrypoint stays tiny. Owns:
   - the warm account pool (headless WS path) OR the browser prewarmer (fallback)
   - KI store initialization
+  - context-store initialization + TTL cleanup
   - the periodic auth_attempts sweep (multi-worker rate-limiter cleanup)
-  - context-store TTL cleanup (see backend/context.py)
+
+NOTE: proxy list refresh (worker.proxy_sources.refresh) is intentionally NOT
+run here. It tests up to ~1000 candidate proxies against an external echo
+endpoint (httpbin.org/ip) at high concurrency — that outbound spam trips
+abuse detection on hosts like Railway and gets the container banned. Run it
+manually as a CLI tool instead:  python -m worker.proxy_sources
 """
 import asyncio
 import logging
@@ -66,21 +72,6 @@ async def on_startup() -> None:
                 log.debug("context sweep failed: %s", e)
             await asyncio.sleep(600)  # every 10 minutes
     _background_tasks.append(asyncio.create_task(housekeeping_loop()))
-
-    # Periodic proxy auto-refresh
-    async def proxy_refresh_loop():
-        # wait a bit before starting to not block initial startup
-        await asyncio.sleep(10)
-        from worker import proxy_sources, proxies
-        while True:
-            try:
-                log.info("Auto-refreshing proxy list from sources...")
-                await proxy_sources.refresh(limit=1000, concurrency=200)
-                proxies.reload()
-            except Exception as e:
-                log.warning("proxy auto-refresh failed: %s", e)
-            await asyncio.sleep(1800)  # every 30 minutes
-    _background_tasks.append(asyncio.create_task(proxy_refresh_loop()))
 
 
 async def on_shutdown() -> None:
